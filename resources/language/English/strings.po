@@ -168,3 +168,11 @@ msgstr ""
 msgctxt "#30045"
 msgid "[COLOR cyan][B]-- NEXT PAGE --[/B][/COLOR]"
 msgstr ""
+
+msgctxt "#30046"
+msgid "Experimental"
+msgstr ""
+
+msgctxt "#30047"
+msgid "Enable pagination"
+msgstr ""

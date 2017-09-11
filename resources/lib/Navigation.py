@@ -11,6 +11,8 @@ from xbmcaddon import Addon
 import resources.lib.NetflixSession as Netflix
 from urlparse import parse_qsl,urlparse
 from utils import noop, log
+from threading import Thread,Event
+import time
 
 class Navigation:
     """Routes to the correct subfolder, dispatches actions & acts as a controller for the Kodi view & the Netflix model"""
@@ -256,28 +258,63 @@ class Navigation:
             None or 'queue' f.e. when itÂ´s a special video lists
         
         start : :obj:`int`
-            Starting point
+            start page
         """
-        end = start + Netflix.FETCH_VIDEO_REQUEST_COUNT
         video_list = {}
-        user_data = self.call_netflix_service({'method': 'get_user_data'})
+        has_more = False
+        stop_event = Event()
+        pagination = self.kodi_helper.get_addon().getSetting('enable_pagination')=="true"
+        thread_list = []
+        if pagination:
+            for page in range(start,start+4):
+                t = LoadVideosThread(self.call_netflix_service,video_list_id,page,self._is_dirty_response,stop_event,self.kodi_helper.log)
+                t.start()
+                thread_list.append(t)
 
-        for i in range(0,4):
-            items = self.call_netflix_service({'method': 'fetch_video_list', 'list_id': video_list_id, 'list_from':start, 'list_to':end, 'guid': user_data['guid'] ,'cache': True})
-            if self._is_dirty_response(response=items) and i == 0:
-                self.kodi_helper.log("show_video_list response is dirty")
-                return False
-            elif len(items) == 0:
-                if i == 0:
-                    self.kodi_helper.log("show_video_list items=0")
-                    return False
-                break
-            video_list.update(items)
-            start=end+1
-            end=start+Netflix.FETCH_VIDEO_REQUEST_COUNT
-        has_more = len(video_list) == (Netflix.FETCH_VIDEO_REQUEST_COUNT + 1) * 4
+            for t in thread_list:
+                t.join()
+                if t.result != None:
+                    video_list.update(t.result)
+
+            has_more = len(video_list) == (Netflix.FETCH_VIDEO_REQUEST_COUNT + 1) * 4
+        else:
+            page = start
+            while not stop_event.isSet():
+                if len(thread_list) == 5:
+                    completedIndexes = self._get_completed_threads(thread_list)
+                    removed = 0
+                    for index in completedIndexes:
+                        videos = thread_list[index-removed].result
+                        if videos != None:
+                            video_list.update(videos)
+                        del thread_list[index-removed]
+                        removed = removed + 1
+
+                    if len(thread_list)==5:
+                        time.sleep(0.2)
+                        continue
+                
+                t = LoadVideosThread(self.call_netflix_service, video_list_id, page, self._is_dirty_response, stop_event,self.kodi_helper.log)
+                t.start()
+                thread_list.append(t)
+                page = page + 1
+
+            for t in thread_list:
+                t.join()
+                if t.result!=None:
+                    video_list.update(t.result)
+
         actions = {'movie': 'play_video', 'show': 'season_list'}
-        return self.kodi_helper.build_video_listing(video_list=video_list, actions=actions, type=type, build_url=self.build_url, has_more=has_more, start=start, current_video_list_id=video_list_id)
+        return self.kodi_helper.build_video_listing(video_list=video_list, actions=actions, type=type, build_url=self.build_url, has_more=has_more, start=start+4, current_video_list_id=video_list_id)
+
+    def _get_completed_threads(self, list):
+        completed = []
+        array_len = len(list)
+        for i in range(0, array_len):
+            thread = list[i]
+            if not thread.isAlive():
+                completed.append(i)
+        return completed
 
     def show_video_lists (self):
         """List the users video lists (recommendations, my list, etc.)"""
@@ -593,3 +630,37 @@ class Navigation:
         is_addon = self.kodi_helper.get_inputstream_addon()
         url = is_addon if url == 'is' else url
         return Addon(url).openSettings()
+
+class LoadVideosThread(Thread):
+    result = None
+    def __init__(self, netflix_service, video_list_id, page, find_error, stop_event,logger):
+        Thread.__init__(self)
+        self.netflix_service = netflix_service
+        self.video_list_id=video_list_id
+        self.page = page
+        self.find_error = find_error
+        self.stop_event = stop_event
+        self.logger = logger
+        return
+
+    def run(self):
+        self.logger("LoadVideosThread run method for page "+str(self.page))
+        if self.stop_event.isSet():
+            self.logger("LoadVideosThread stop event is set for page "+str(self.page))
+            return
+        
+        start = (self.page * Netflix.FETCH_VIDEO_REQUEST_COUNT) + self.page
+        end = start + Netflix.FETCH_VIDEO_REQUEST_COUNT
+        
+        user_data = self.netflix_service({'method': 'get_user_data'})
+        try:
+            items = self.netflix_service({'method': 'fetch_video_list', 'list_id': self.video_list_id, 'list_from':start, 'list_to':end, 'guid': user_data['guid'] ,'cache': True})
+            if self.find_error(items) or len(items) == 0:
+                self.logger("LoadVideosThread error found/items=0 for page "+str(self.page))
+                self.stop_event.set()
+                return None
+            self.result = items
+            self.logger("LoadVideosThread complete for page "+str(self.page)+": items="+str(len(items)))
+            return self.result
+        except:
+            self.stop_event.set()

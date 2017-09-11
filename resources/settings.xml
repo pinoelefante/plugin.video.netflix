@@ -21,4 +21,7 @@
     <setting id="msl_service_port" value="8000" visible="false"/>
     <setting id="netflix_service_port" value="8001" visible="false"/>
   </category>
+  <category label="30046">
+    <setting id="enable_pagination" type="bool" label="30047" default="true"/>
+  </category>
 </settings>
